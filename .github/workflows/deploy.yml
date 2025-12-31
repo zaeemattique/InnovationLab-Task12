@@ -6,6 +6,7 @@ on:
 
 env:
   AWS_REGION: us-west-2
+  ECR_REGISTRY: 880958245574.dkr.ecr.us-west-2.amazonaws.com  # ADD THIS
   ECR_REPOSITORY: zaeem/task12
   ECS_SERVICE: Task12-Task-Definition-Zaeem-service 
   ECS_CLUSTER: Task12-ECS-Cluster-Zaeem
@@ -34,14 +35,14 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
     
-    # 4. Login to ECR
+    # 4. Login to ECR (simpler approach)
     - name: Login to ECR
-      uses: aws-actions/amazon-ecr-login@v1
+      run: |
+        aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
     
     # 5. Build and push Docker image
     - name: Build and push
       env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         IMAGE_TAG: ${{ github.sha }}
       run: |
         docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
