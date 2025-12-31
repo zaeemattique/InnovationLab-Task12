@@ -10,18 +10,16 @@ env:
   ECR_REPOSITORY: zaeem/task12
   ECS_SERVICE: Task12-Task-Definition-Zaeem-service 
   ECS_CLUSTER: Task12-ECS-Cluster-Zaeem
-  CONTAINER_NAME: NodeJS-App  
+  CONTAINER_NAME: task12-container
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     
     steps:
-    # 1. Checkout code
     - name: Checkout
       uses: actions/checkout@v3
     
-    # 2. Configure AWS credentials
     - name: Configure AWS
       uses: aws-actions/configure-aws-credentials@v2
       with:
@@ -29,88 +27,36 @@ jobs:
         aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws-region: ${{ env.AWS_REGION }}
     
-    # 3. Login to ECR
     - name: Login to ECR
-      run: |
-        aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v1
     
-    # 4. Build and push Docker image
     - name: Build and push
+      id: build-image
       env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         IMAGE_TAG: ${{ github.sha }}
       run: |
         docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        echo "IMAGE=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_ENV
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
     
-    # 5. Update ECS service with new image
-- name: Update ECS service
-  env:
-    IMAGE_TAG: ${{ github.sha }}
-  run: |
-    # Get current task definition family name
-    TASK_FAMILY=$(aws ecs describe-services \
-      --cluster $ECS_CLUSTER \
-      --services $ECS_SERVICE \
-      --query 'services[0].taskDefinition' \
-      --output text | cut -d'/' -f2 | cut -d':' -f1)
-    
-    # Get current task definition
-    aws ecs describe-task-definition \
-      --task-definition $TASK_FAMILY \
-      --query 'taskDefinition' > task-definition.json
-    
-    # Update image in task definition
-    jq --arg IMAGE "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" \
-      '(.containerDefinitions[0].image) = $IMAGE | 
-       del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
-      task-definition.json > new-task-definition.json
-    
-    # Register new task definition
-    NEW_TASK_DEF=$(aws ecs register-task-definition \
-      --cli-input-json file://new-task-definition.json \
-      --query 'taskDefinition.taskDefinitionArn' \
-      --output text)
-    
-    # Update service
-    aws ecs update-service \
-      --cluster $ECS_CLUSTER \
-      --service $ECS_SERVICE \
-      --task-definition $NEW_TASK_DEF \
-      --force-new-deployment
-
-- name: Wait for service stability
-  run: |
-    aws ecs wait services-stable \
-      --cluster $ECS_CLUSTER \
-      --services $ECS_SERVICE
-    
-    # 6. Update task definition with new image
-    - name: Update task definition
+    - name: Download task definition
       run: |
-        jq --arg IMAGE "$IMAGE" --arg CONTAINER "$CONTAINER_NAME" \
-          '(.containerDefinitions[] | select(.name == $CONTAINER) | .image) = $IMAGE | 
-           del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
-          task-definition.json > new-task-definition.json
+        aws ecs describe-task-definition --task-definition $(aws ecs describe-services --cluster $ECS_CLUSTER --services $ECS_SERVICE --query 'services[0].taskDefinition' --output text | cut -d'/' -f2) --query taskDefinition > task-definition.json
     
-    # 7. Register new task definition
-    - name: Register new task definition
-      run: |
-        NEW_TASK_DEF=$(aws ecs register-task-definition --cli-input-json file://new-task-definition.json --query 'taskDefinition.taskDefinitionArn' --output text)
-        echo "NEW_TASK_DEF=$NEW_TASK_DEF" >> $GITHUB_ENV
+    - name: Fill in new image in task definition
+      id: task-def
+      uses: aws-actions/amazon-ecs-render-task-definition@v1
+      with:
+        task-definition: task-definition.json
+        container-name: ${{ env.CONTAINER_NAME }}
+        image: ${{ steps.build-image.outputs.image }}
     
-    # 8. Update ECS service with new task definition
-    - name: Update ECS service
-      run: |
-        aws ecs update-service \
-          --cluster $ECS_CLUSTER \
-          --service $ECS_SERVICE \
-          --task-definition $NEW_TASK_DEF \
-          --force-new-deployment
-    
-    # 9. Wait for deployment to complete
-    - name: Wait for service stability
-      run: |
-        aws ecs wait services-stable \
-          --cluster $ECS_CLUSTER \
-          --services $ECS_SERVICE
+    - name: Deploy to ECS
+      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+      with:
+        task-definition: ${{ steps.task-def.outputs.task-definition }}
+        service: ${{ env.ECS_SERVICE }}
+        cluster: ${{ env.ECS_CLUSTER }}
+        wait-for-service-stability: true
