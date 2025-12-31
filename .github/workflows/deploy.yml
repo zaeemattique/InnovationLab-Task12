@@ -1,0 +1,62 @@
+name: Deploy to ECS
+
+on:
+  push:
+    branches: [main]
+
+env:
+  AWS_REGION: us-west-2
+  ECR_REPOSITORY: zaeem/task12
+  ECS_SERVICE: Task12-Task-Definition-Zaeem-service 
+  ECS_CLUSTER: Task12-ECS-Cluster-Zaeem
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+    # 1. Checkout code
+    - name: Checkout
+      uses: actions/checkout@v3
+    
+    # 2. Setup Node.js
+    - name: Setup Node
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        cache: 'npm'
+    
+    # 3. Run tests
+    - name: Test
+      run: |
+        npm ci
+        npm test
+    
+    # 4. Configure AWS credentials
+    - name: Configure AWS
+      uses: aws-actions/configure-aws-credentials@v2
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+    
+    # 5. Login to ECR
+    - name: Login to ECR
+      uses: aws-actions/amazon-ecr-login@v1
+    
+    # 6. Build and push Docker image
+    - name: Build and push
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+    
+    # 7. Deploy to ECS
+    - name: Deploy to ECS
+      run: |
+        aws ecs update-service \
+          --cluster $ECS_CLUSTER \
+          --service $ECS_SERVICE \
+          --force-new-deployment
